@@ -1024,6 +1024,19 @@ ${toolDescriptions}
     return this.mcpService ? this.mcpService.getAvailableTools() : [];
   }
   
+  // Helper method to generate unique test messages
+  private generateTestMessage(content: string = 'test message'): BotMessage {
+    return {
+      id: `test-msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      content,
+      from: 'test-user',
+      timestamp: Date.now(),
+      isGroup: false,
+      senderName: 'Test User',
+      hasMedia: false
+    };
+  }
+  
   // Test method to verify tool functionality
   async testCalculatorTool(): Promise<void> {
     console.log('🔧 Testing calculator tool...');
@@ -1034,15 +1047,7 @@ ${toolDescriptions}
         parameters: { expression: '2 + 2' }
       };
       
-      const testMessage: BotMessage = {
-        id: 'test-msg',
-        content: 'test calculation',
-        from: 'test-user',
-        timestamp: Date.now(),
-        isGroup: false,
-        senderName: 'Test User',
-        hasMedia: false
-      };
+      const testMessage = this.generateTestMessage('test calculation');
       
       const result = await this.executeToolCalls([testCall], testMessage);
       console.log('🔧 Calculator test result:', result);
