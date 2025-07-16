@@ -49,13 +49,32 @@ export class AnthropicProvider extends BaseLLMProvider {
           description: tool.description,
           input_schema: tool.parameters
         }));
+        
+        console.log(`🔧 Debug: Sending ${tools.length} tools to Anthropic API`);
+        console.log(`🔧 Debug: Tool names: ${tools.map(t => t.name).join(', ')}`);
+        console.log(`🔧 Debug: Tool choice: ${toolChoice}`);
 
         if (toolChoice !== 'auto') {
           requestParams.tool_choice = toolChoice === 'none' ? { type: 'auto' } : { type: 'tool', name: toolChoice };
         }
+      } else {
+        console.log(`🔧 Debug: No tools provided to Anthropic API`);
       }
 
+      console.log(`🔧 Debug: Anthropic API request params:`, {
+        model: requestParams.model,
+        toolsCount: requestParams.tools?.length || 0,
+        systemPromptLength: requestParams.system?.length || 0,
+        messageCount: requestParams.messages?.length || 0
+      });
+      
       const response = await this.client.messages.create(requestParams);
+      
+      console.log(`🔧 Debug: Anthropic API response:`, {
+        contentBlocks: response.content.length,
+        toolUseBlocks: response.content.filter(block => block.type === 'tool_use').length,
+        textBlocks: response.content.filter(block => block.type === 'text').length
+      });
 
       return this.parseResponse(response);
     } catch (error) {
@@ -90,6 +109,10 @@ export class AnthropicProvider extends BaseLLMProvider {
 
     if (systemContent) {
       result.system = systemContent;
+      console.log(`🔧 Debug: System prompt length: ${typeof systemContent === 'string' ? systemContent.length : 'non-string'}`);
+      if (typeof systemContent === 'string') {
+        console.log(`🔧 Debug: System prompt preview: ${systemContent.substring(0, 300)}...`);
+      }
     }
 
     return result;

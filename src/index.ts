@@ -88,6 +88,14 @@ async function main() {
       if (advancedStats) {
         console.log('🔧 Advanced Stats:', advancedStats);
       }
+      
+      // Test calculator tool functionality
+      console.log('\n🔧 Testing tool functionality...');
+      try {
+        await chatbot.testCalculatorTool();
+      } catch (error) {
+        console.error('❌ Tool testing failed:', error);
+      }
 
       console.log('\n💡 Tips:');
       console.log('  - Send text messages for chat');

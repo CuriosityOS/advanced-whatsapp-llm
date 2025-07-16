@@ -148,6 +148,11 @@ export class Chatbot extends EventEmitter {
         if (this.isToolQuery(message.content)) {
           return await this.handleToolQuery(message);
         }
+        
+        // Check for mathematical expressions that should use calculator
+        if (this.isMathQuery(message.content)) {
+          console.log(`🔧 Debug: Math query detected: ${message.content}`);
+        }
 
         // Use RAG for enhanced responses if available
         const response = this.ragService && this.config.enableRAG !== false
@@ -253,6 +258,11 @@ export class Chatbot extends EventEmitter {
 
       let llmResponse = await this.llmProvider.generateResponse(messages, options);
 
+      console.log(`🔧 Debug: LLM Response received. Tool calls: ${llmResponse.toolCalls ? llmResponse.toolCalls.length : 0}`);
+      if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
+        console.log(`🔧 Debug: Tool calls detected:`, llmResponse.toolCalls.map(tc => tc.name));
+      }
+
       // Handle tool calls if present
       if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
         const toolResults = await this.executeToolCalls(llmResponse.toolCalls, message);
@@ -275,10 +285,19 @@ export class Chatbot extends EventEmitter {
           ...options,
           tools: [] // Don't use tools in the follow-up call
         });
+        
+        console.log(`🔧 Debug: Final response after tool execution:`, llmResponse.content.substring(0, 100));
       }
 
+      // Add tool usage indicator if tools were used
+      let finalContent = llmResponse.content;
+      if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
+        const toolNames = llmResponse.toolCalls.map(tc => tc.name).join(', ');
+        finalContent = `🔧 *Used tools: ${toolNames}*\n\n${finalContent}`;
+      }
+      
       return {
-        content: llmResponse.content,
+        content: finalContent,
         quotedMessage: message.id
       };
 
@@ -444,6 +463,22 @@ export class Chatbot extends EventEmitter {
     const lowerMessage = message.toLowerCase();
     return toolQueries.some(query => lowerMessage.includes(query));
   }
+  
+  private isMathQuery(message: string): boolean {
+    const mathPatterns = [
+      /\d+\s*[+\-*/x÷]\s*\d+/,
+      /calculate/i,
+      /math/i,
+      /\d+\s*\*\s*\d+/,
+      /\d+\s*x\s*\d+/i,
+      /\d+\s*÷\s*\d+/,
+      /\d+\s*\+\s*\d+/,
+      /\d+\s*-\s*\d+/,
+      /\d+\s*\/\s*\d+/
+    ];
+    
+    return mathPatterns.some(pattern => pattern.test(message));
+  }
 
   private async handleToolQuery(message: BotMessage): Promise<BotResponse> {
     const localTools = this.toolManager.getAvailableTools();
@@ -485,12 +520,23 @@ export class Chatbot extends EventEmitter {
 🔧 **Available Tools:**
 ${toolDescriptions}
 
-**Key Instructions:**
+**CRITICAL TOOL USAGE INSTRUCTIONS:**
+• **ALWAYS use the calculator tool for ANY mathematical calculation** - Do not calculate manually
+• **ALWAYS use the search tool for current information** - Do not rely on your knowledge alone
+• **ALWAYS use the weather tool for weather queries** - Do not guess weather information
+• **ALWAYS use the time tool for time-related queries** - Do not estimate time
+• **ALWAYS use the uuid tool for generating identifiers** - Do not create random strings
 • When asked "What tools do you have?" or about your capabilities, list the available tools above
-• Use tools when appropriate to provide accurate, up-to-date information
-• Always use the most appropriate tool for the user's request
+• You MUST call the appropriate tool for every request that matches a tool's capability
 • If a tool fails, explain the issue and offer alternatives
-• You have access to ${availableTools.length} tools - use them to help users effectively`;
+• You have access to ${availableTools.length} tools - use them actively and frequently
+
+**Examples of MANDATORY tool usage:**
+• "Calculate 2+2" → MUST use calculator tool
+• "What's the weather?" → MUST use weather tool
+• "What time is it?" → MUST use time tool
+• "Search for news" → MUST use search tool
+• "Generate a UUID" → MUST use uuid tool`;
   }
 
   private updateConversationHistory(userId: string, userMessage: string, botResponse: string): void {
@@ -691,5 +737,32 @@ ${toolDescriptions}
 
   getMCPTools() {
     return this.mcpService ? this.mcpService.getAvailableTools() : [];
+  }
+  
+  // Test method to verify tool functionality
+  async testCalculatorTool(): Promise<void> {
+    console.log('🔧 Testing calculator tool...');
+    try {
+      const testCall = {
+        id: 'test-calc',
+        name: 'calculator',
+        parameters: { expression: '2 + 2' }
+      };
+      
+      const testMessage: BotMessage = {
+        id: 'test-msg',
+        content: 'test calculation',
+        from: 'test-user',
+        timestamp: Date.now(),
+        isGroup: false,
+        senderName: 'Test User',
+        hasMedia: false
+      };
+      
+      const result = await this.executeToolCalls([testCall], testMessage);
+      console.log('🔧 Calculator test result:', result);
+    } catch (error) {
+      console.error('❌ Calculator test failed:', error);
+    }
   }
 }
