@@ -1,0 +1,57 @@
+{
+  "name": "neshauto",
+  "version": "1.0.0",
+  "description": "Efficient WhatsApp chatbot using whatsapp-web.js and Anthropic API",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "watch": "tsx watch src/index.ts",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\""
+  },
+  "keywords": [
+    "whatsapp",
+    "chatbot",
+    "anthropic",
+    "ai",
+    "nodejs"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.56.0",
+    "@supabase/supabase-js": "^2.51.0",
+    "axios": "^1.10.0",
+    "dotenv": "^17.2.0",
+    "mime-types": "^2.1.35",
+    "node-cache": "^5.1.2",
+    "openai": "^4.77.0",
+    "pdf-parse": "^1.1.1",
+    "pdf2pic": "^3.1.3",
+    "qrcode-terminal": "^0.12.0",
+    "readline": "^1.3.0",
+    "sharp": "^0.33.5",
+    "uuid": "^11.0.3",
+    "whatsapp-web.js": "^1.31.0"
+  },
+  "devDependencies": {
+    "@types/mime-types": "^2.1.4",
+    "@types/node": "^24.0.14",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.37.0",
+    "@typescript-eslint/parser": "^8.37.0",
+    "eslint": "^9.31.0",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
