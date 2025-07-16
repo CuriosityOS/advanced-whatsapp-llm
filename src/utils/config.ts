@@ -48,6 +48,17 @@ export interface AppConfig {
     enableRAG: boolean;
     enableVision: boolean;
     enablePDF: boolean;
+    enableMCP: boolean;
+  };
+  mcp?: {
+    servers: Array<{
+      name: string;
+      command: string;
+      args: string[];
+      enabled: boolean;
+    }>;
+    timeout: number;
+    retryAttempts: number;
   };
 }
 
@@ -96,7 +107,31 @@ class ConfigManager {
       },
       bot: {
         systemPrompt: process.env.BOT_SYSTEM_PROMPT || 
-          'You are a helpful WhatsApp chatbot assistant. Be concise, friendly, and helpful in your responses.',
+          `You are a helpful WhatsApp chatbot assistant with access to various tools and capabilities.
+
+🔧 **Available Tools:**
+• **Calculator** - Perform mathematical calculations and solve math problems
+• **Search** - Search the web for current information, news, and facts
+• **Weather** - Get current weather conditions and forecasts for any location
+• **Time** - Get current time, date, and timezone information
+• **UUID** - Generate unique identifiers for development and testing
+
+📱 **Capabilities:**
+• Text conversation and Q&A
+• Image analysis and description (vision)
+• PDF document processing and Q&A
+• Document retrieval and knowledge search (RAG)
+• Mathematical calculations
+• Web search and information retrieval
+• Weather and time information
+• UUID and identifier generation
+
+🎯 **Instructions:**
+• Use tools when appropriate to provide accurate, up-to-date information
+• Be concise, friendly, and helpful in your responses
+• When asked about your capabilities, mention the available tools
+• Always use the most appropriate tool for the user's request
+• If a tool fails, explain the issue and offer alternatives`,
         maxTokens: parseInt(process.env.BOT_MAX_TOKENS || '1000'),
         temperature: parseFloat(process.env.BOT_TEMPERATURE || '0.7'),
         enableLogging: process.env.BOT_ENABLE_LOGGING !== 'false',
@@ -136,7 +171,32 @@ class ConfigManager {
       features: {
         enableRAG: process.env.ENABLE_RAG !== 'false',
         enableVision: process.env.ENABLE_VISION !== 'false',
-        enablePDF: process.env.ENABLE_PDF !== 'false'
+        enablePDF: process.env.ENABLE_PDF !== 'false',
+        enableMCP: process.env.ENABLE_MCP !== 'false'
+      },
+      mcp: {
+        servers: [
+          {
+            name: 'filesystem',
+            command: 'npx',
+            args: ['@modelcontextprotocol/server-filesystem'],
+            enabled: process.env.MCP_FILESYSTEM_ENABLED === 'true'
+          },
+          {
+            name: 'database',
+            command: 'npx',
+            args: ['@modelcontextprotocol/server-database'],
+            enabled: process.env.MCP_DATABASE_ENABLED === 'true'
+          },
+          {
+            name: 'web',
+            command: 'npx',
+            args: ['@modelcontextprotocol/server-web'],
+            enabled: process.env.MCP_WEB_ENABLED === 'true'
+          }
+        ],
+        timeout: parseInt(process.env.MCP_TIMEOUT || '30000'),
+        retryAttempts: parseInt(process.env.MCP_RETRY_ATTEMPTS || '3')
       }
     };
   }
@@ -215,6 +275,11 @@ class ConfigManager {
     console.log(`  🧠 RAG: ${config.features.enableRAG ? 'Enabled' : 'Disabled'}`);
     console.log(`  👁️ Vision: ${config.features.enableVision ? 'Enabled' : 'Disabled'}`);
     console.log(`  📄 PDF: ${config.features.enablePDF ? 'Enabled' : 'Disabled'}`);
+    console.log(`  🔗 MCP: ${config.features.enableMCP ? 'Enabled' : 'Disabled'}`);
+    if (config.features.enableMCP && config.mcp) {
+      const enabledServers = config.mcp.servers.filter(s => s.enabled);
+      console.log(`  🔌 MCP Servers: ${enabledServers.length > 0 ? enabledServers.map(s => s.name).join(', ') : 'None'}`);
+    }
     console.log('');
   }
 }

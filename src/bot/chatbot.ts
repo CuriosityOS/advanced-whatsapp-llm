@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { WhatsAppService, DatabaseService, EmbeddingsService, VectorService, RAGService } from '../services';
+import { WhatsAppService, DatabaseService, EmbeddingsService, VectorService, RAGService, MCPService, createDefaultMCPConfig } from '../services';
 import { LLMProvider, BotMessage, BotResponse, MessageMiddleware, LLMMessage, ToolCall, ToolContext } from '../types';
 import { createClient } from '@supabase/supabase-js';
 import NodeCache from 'node-cache';
@@ -23,6 +23,13 @@ export interface ChatbotConfig {
   enableRAG?: boolean;
   enableVision?: boolean;
   enablePDF?: boolean;
+  enableMCP?: boolean;
+  mcpServers?: Array<{
+    name: string;
+    command: string;
+    args: string[];
+    enabled: boolean;
+  }>;
   cacheConfig?: {
     ttlSeconds?: number;
     maxKeys?: number;
@@ -41,6 +48,7 @@ export class Chatbot extends EventEmitter {
   private embeddingsService?: EmbeddingsService;
   private vectorService?: VectorService;
   private ragService?: RAGService;
+  private mcpService?: MCPService;
   private cache: NodeCache;
   private toolManager: ToolManager;
 
@@ -95,12 +103,28 @@ export class Chatbot extends EventEmitter {
       // Initialize ToolManager
       await this.toolManager.initialize();
 
+      // Initialize MCP service if enabled
+      if (this.config.enableMCP !== false) {
+        try {
+          const mcpConfig = createDefaultMCPConfig();
+          if (this.config.mcpServers) {
+            mcpConfig.servers = this.config.mcpServers;
+          }
+          this.mcpService = new MCPService(mcpConfig);
+          await this.mcpService.initialize();
+        } catch (error) {
+          console.error('❌ MCP service initialization error:', error);
+        }
+      }
+
       console.log('🔧 Services initialized:', {
         database: !!this.databaseService,
         embeddings: !!this.embeddingsService,
         vector: !!this.vectorService,
         rag: !!this.ragService,
+        mcp: !!this.mcpService,
         tools: this.toolManager.getAvailableTools().length,
+        mcpTools: this.mcpService ? this.mcpService.getAvailableTools().length : 0,
         vision: this.config.enableVision !== false,
         pdf: this.config.enablePDF !== false
       });
@@ -203,14 +227,18 @@ export class Chatbot extends EventEmitter {
         }
       ];
 
+      const localTools = this.toolManager.getAvailableTools();
+      const mcpTools = this.mcpService ? this.mcpService.getAvailableTools() : [];
+      const availableTools = [...localTools, ...mcpTools];
+      
       const options: any = {
         maxTokens: this.config.maxTokens || 1000,
         temperature: this.config.temperature || 0.7,
-        tools: this.toolManager.getAvailableTools()
+        tools: availableTools
       };
 
       if (this.config.systemPrompt) {
-        options.systemPrompt = this.config.systemPrompt;
+        options.systemPrompt = this.generateDynamicSystemPrompt(availableTools);
       }
 
       let llmResponse = await this.llmProvider.generateResponse(messages, options);
@@ -276,7 +304,24 @@ export class Chatbot extends EventEmitter {
     const results = [];
     for (const toolCall of toolCalls) {
       try {
-        const result = await this.toolManager.executeTool(toolCall, toolContext);
+        let result;
+        
+        // Check if it's a local tool or MCP tool
+        const localTool = this.toolManager.getTool(toolCall.name);
+        if (localTool) {
+          // Execute local tool
+          result = await this.toolManager.executeTool(toolCall, toolContext);
+        } else if (this.mcpService) {
+          // Execute MCP tool
+          const mcpResult = await this.mcpService.executeTool(toolCall.name, toolCall.parameters, toolContext);
+          result = {
+            toolCallId: toolCall.id,
+            result: mcpResult
+          };
+        } else {
+          throw new Error(`Tool '${toolCall.name}' not found`);
+        }
+        
         results.push(result);
         console.log(`🔧 Tool ${toolCall.name} executed:`, result.result.success ? '✅ Success' : '❌ Failed');
       } catch (error) {
@@ -374,6 +419,29 @@ export class Chatbot extends EventEmitter {
     return history;
   }
 
+  private generateDynamicSystemPrompt(availableTools: any[]): string {
+    const basePrompt = this.config.systemPrompt || 'You are a helpful WhatsApp chatbot assistant.';
+    
+    if (availableTools.length === 0) {
+      return basePrompt;
+    }
+
+    const toolDescriptions = availableTools.map(tool => 
+      `• **${tool.name}** - ${tool.description}`
+    ).join('\n');
+
+    return `${basePrompt}
+
+🔧 **Available Tools:**
+${toolDescriptions}
+
+**Instructions:**
+• Use tools when appropriate to provide accurate, up-to-date information
+• When asked about your capabilities or tools, mention the available tools above
+• Always use the most appropriate tool for the user's request
+• If a tool fails, explain the issue and offer alternatives`;
+  }
+
   private updateConversationHistory(userId: string, userMessage: string, botResponse: string): void {
     const history = this.conversationHistory.get(userId) || [];
     
@@ -408,6 +476,9 @@ export class Chatbot extends EventEmitter {
   async stop(): Promise<void> {
     await this.whatsapp.stop();
     await this.toolManager.cleanup();
+    if (this.mcpService) {
+      await this.mcpService.disconnect();
+    }
   }
 
   clearConversationHistory(userId?: string): void {
@@ -433,7 +504,9 @@ export class Chatbot extends EventEmitter {
       pdf: boolean;
       database: boolean;
       cache: boolean;
+      mcp: boolean;
       tools: number;
+      mcpTools: number;
     };
     cache: {
       keys: number;
@@ -454,7 +527,9 @@ export class Chatbot extends EventEmitter {
         pdf: this.config.enablePDF !== false,
         database: !!this.databaseService,
         cache: true,
-        tools: this.toolManager.getAvailableTools().length
+        mcp: !!this.mcpService,
+        tools: this.toolManager.getAvailableTools().length,
+        mcpTools: this.mcpService ? this.mcpService.getAvailableTools().length : 0
       },
       cache: {
         keys: this.cache.keys().length,
@@ -536,5 +611,34 @@ export class Chatbot extends EventEmitter {
 
   async reloadTool(toolName: string): Promise<boolean> {
     return await this.toolManager.reloadTool(toolName);
+  }
+
+  // MCP management methods
+  getMCPStats() {
+    return this.mcpService ? this.mcpService.getStats() : null;
+  }
+
+  getMCPServers() {
+    return this.mcpService ? this.mcpService.getConnectedServers() : [];
+  }
+
+  getMCPServerStatus() {
+    return this.mcpService ? this.mcpService.getServerStatus() : {};
+  }
+
+  async reconnectMCPServer(serverName: string): Promise<boolean> {
+    return this.mcpService ? await this.mcpService.reconnectServer(serverName) : false;
+  }
+
+  enableMCPServer(serverName: string): boolean {
+    return this.mcpService ? this.mcpService.enableServer(serverName) : false;
+  }
+
+  disableMCPServer(serverName: string): boolean {
+    return this.mcpService ? this.mcpService.disableServer(serverName) : false;
+  }
+
+  getMCPTools() {
+    return this.mcpService ? this.mcpService.getAvailableTools() : [];
   }
 }

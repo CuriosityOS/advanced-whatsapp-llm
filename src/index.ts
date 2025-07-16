@@ -39,6 +39,8 @@ async function main() {
       enableRAG: configManager.config.features.enableRAG,
       enableVision: configManager.config.features.enableVision,
       enablePDF: configManager.config.features.enablePDF,
+      enableMCP: configManager.config.features.enableMCP,
+      mcpServers: configManager.config.mcp?.servers,
       cacheConfig: {
         ttlSeconds: 3600, // 1 hour
         maxKeys: 1000
@@ -98,6 +100,10 @@ async function main() {
       if (stats.features.rag) {
         console.log('  - Ask questions about uploaded documents');
       }
+      if (stats.features.mcp && stats.features.mcpTools > 0) {
+        console.log(`  - Use MCP tools (${stats.features.mcpTools} available)`);
+      }
+      console.log('  - Ask "What tools do you have?" to see available tools');
       console.log('  - Press Ctrl+C to stop the bot');
     });
 

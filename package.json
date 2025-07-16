@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.56.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "@supabase/supabase-js": "^2.51.0",
     "axios": "^1.10.0",
     "dotenv": "^17.2.0",
