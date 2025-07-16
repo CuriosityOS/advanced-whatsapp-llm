@@ -149,15 +149,8 @@ export class Chatbot extends EventEmitter {
           return await this.handleToolQuery(message);
         }
         
-        // Check for mathematical expressions that should use calculator
-        if (this.isMathQuery(message.content)) {
-          console.log(`🔧 Debug: Math query detected: ${message.content}`);
-        }
-
-        // Use RAG for enhanced responses if available
-        const response = this.ragService && this.config.enableRAG !== false
-          ? await this.generateRAGResponse(message)
-          : await this.generateResponse(message);
+        // Smart routing: Use tools for tool-relevant queries, RAG for knowledge queries
+        const response = await this.generateSmartResponse(message);
         
         if (response) {
           this.updateConversationHistory(message.from, message.content, response.content);
@@ -276,7 +269,7 @@ export class Chatbot extends EventEmitter {
           },
           ...toolResults.map(result => ({
             role: 'user' as const,
-            content: `Tool result: ${JSON.stringify(result.result)}`
+            content: `Tool result: ${JSON.stringify((result as any)?.result || 'Error')}`
           }))
         ];
 
@@ -292,8 +285,19 @@ export class Chatbot extends EventEmitter {
       // Add tool usage indicator if tools were used
       let finalContent = llmResponse.content;
       if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
-        const toolNames = llmResponse.toolCalls.map(tc => tc.name).join(', ');
-        finalContent = `🔧 *Used tools: ${toolNames}*\n\n${finalContent}`;
+        const toolNames = llmResponse.toolCalls.map(tc => tc.name);
+        const uniqueTools = [...new Set(toolNames)];
+        const toolCounts = toolNames.reduce((acc, name) => {
+          acc[name] = (acc[name] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        
+        const toolSummary = uniqueTools.map(name => 
+          (toolCounts[name] || 0) > 1 ? `${name} (${toolCounts[name]}x)` : name
+        ).join(', ');
+        
+        const executionMode = llmResponse.toolCalls.length > 1 ? 'parallel' : 'single';
+        finalContent = `🔧 *Used tools (${executionMode}): ${toolSummary}*\n\n${finalContent}`;
       }
       
       return {
@@ -330,41 +334,71 @@ export class Chatbot extends EventEmitter {
       }
     }
 
-    const results = [];
-    for (const toolCall of toolCalls) {
-      try {
-        let result;
-        
-        // Check if it's a local tool or MCP tool
-        const localTool = this.toolManager.getTool(toolCall.name);
-        if (localTool) {
-          // Execute local tool
-          result = await this.toolManager.executeTool(toolCall, toolContext);
-        } else if (this.mcpService) {
-          // Execute MCP tool
-          const mcpResult = await this.mcpService.executeTool(toolCall.name, toolCall.parameters, toolContext);
-          result = {
-            toolCallId: toolCall.id,
-            result: mcpResult
-          };
-        } else {
-          throw new Error(`Tool '${toolCall.name}' not found`);
-        }
-        
-        results.push(result);
-        console.log(`🔧 Tool ${toolCall.name} executed:`, result.result.success ? '✅ Success' : '❌ Failed');
-      } catch (error) {
-        console.error(`❌ Error executing tool ${toolCall.name}:`, error);
-        results.push({
-          toolCallId: toolCall.id,
-          result: {
-            success: false,
-            error: `Execution error: ${error instanceof Error ? error.message : 'Unknown error'}`
-          }
-        });
-      }
-    }
+    // Execute all tools in parallel
+    console.log(`🔧 Executing ${toolCalls.length} tools in parallel:`, toolCalls.map(tc => tc.name));
+    const startTime = Date.now();
 
+    const toolPromises = toolCalls.map(async (toolCall) => {
+      const toolStartTime = Date.now();
+      
+      // Create a timeout promise
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Tool ${toolCall.name} timed out after 30 seconds`));
+        }, 30000); // 30 second timeout
+      });
+      
+      const executionPromise = (async () => {
+        try {
+          let result;
+          
+          // Check if it's a local tool or MCP tool
+          const localTool = this.toolManager.getTool(toolCall.name);
+          if (localTool) {
+            // Execute local tool
+            result = await this.toolManager.executeTool(toolCall, toolContext);
+          } else if (this.mcpService) {
+            // Execute MCP tool
+            const mcpResult = await this.mcpService.executeTool(toolCall.name, toolCall.parameters, toolContext);
+            result = {
+              toolCallId: toolCall.id,
+              result: mcpResult
+            };
+          } else {
+            throw new Error(`Tool '${toolCall.name}' not found`);
+          }
+          
+          const toolEndTime = Date.now();
+          const toolExecutionTime = toolEndTime - toolStartTime;
+          
+          console.log(`🔧 Tool ${toolCall.name} executed in ${toolExecutionTime}ms:`, result.result.success ? '✅ Success' : '❌ Failed');
+          return result;
+          
+        } catch (error) {
+          const toolEndTime = Date.now();
+          const toolExecutionTime = toolEndTime - toolStartTime;
+          
+          console.error(`❌ Error executing tool ${toolCall.name} in ${toolExecutionTime}ms:`, error);
+          return {
+            toolCallId: toolCall.id,
+            result: {
+              success: false,
+              error: `Execution error: ${error instanceof Error ? error.message : 'Unknown error'}`
+            }
+          };
+        }
+      })();
+      
+      // Race between execution and timeout
+      return Promise.race([executionPromise, timeoutPromise]);
+    });
+
+    // Wait for all tools to complete
+    const results = await Promise.all(toolPromises);
+    const totalExecutionTime = Date.now() - startTime;
+    
+    console.log(`🔧 All ${toolCalls.length} tools completed in ${totalExecutionTime}ms (parallel execution)`);
+    
     return results;
   }
 
@@ -372,6 +406,12 @@ export class Chatbot extends EventEmitter {
     try {
       if (!this.ragService) {
         return await this.generateResponse(message);
+      }
+
+      // Check if the query might need tools even within RAG context
+      if (this.needsToolSupport(message.content)) {
+        console.log(`🔧 RAG query with tool support needed: ${message.content.substring(0, 50)}...`);
+        return await this.generateHybridResponse(message);
       }
 
       const conversation = this.getConversationHistory(message.from);
@@ -395,6 +435,110 @@ export class Chatbot extends EventEmitter {
 
     } catch (error) {
       console.error('Error generating RAG response:', error);
+      return {
+        content: '🤔 I encountered an issue processing your request. Please try again.',
+      };
+    }
+  }
+
+  private async generateHybridResponse(message: BotMessage): Promise<BotResponse | null> {
+    try {
+      console.log(`🔧 Generating hybrid response (RAG + Tools) for: ${message.content.substring(0, 50)}...`);
+      
+      const conversation = this.getConversationHistory(message.from);
+      const messages: LLMMessage[] = [
+        ...conversation,
+        {
+          role: 'user',
+          content: this.prepareMessageContent(message)
+        }
+      ];
+
+      const localTools = this.toolManager.getAvailableTools();
+      const mcpTools = this.mcpService ? this.mcpService.getAvailableTools() : [];
+      const availableTools = [...localTools, ...mcpTools];
+      
+      console.log(`🔧 Hybrid mode - Available tools: ${availableTools.length}`);
+      
+      const options: any = {
+        maxTokens: this.config.maxTokens || 1000,
+        temperature: this.config.temperature || 0.7,
+        tools: availableTools
+      };
+
+      // Use dynamic system prompt with both RAG and tool instructions
+      const dynamicPrompt = this.generateDynamicSystemPrompt(availableTools);
+      options.systemPrompt = dynamicPrompt;
+
+      let llmResponse = await this.llmProvider.generateResponse(messages, options);
+
+      // Handle tool calls if present
+      if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
+        const toolResults = await this.executeToolCalls(llmResponse.toolCalls, message);
+        
+        // Add tool results to conversation and get final response
+        const updatedMessages = [
+          ...messages,
+          {
+            role: 'assistant' as const,
+            content: llmResponse.content || 'I\'ll help you with that.'
+          },
+          ...toolResults.map(result => ({
+            role: 'user' as const,
+            content: `Tool result: ${JSON.stringify((result as any)?.result || 'Error')}`
+          }))
+        ];
+
+        // Get final response from LLM with tool results
+        llmResponse = await this.llmProvider.generateResponse(updatedMessages, {
+          ...options,
+          tools: [] // Don't use tools in the follow-up call
+        });
+      }
+
+      // Try to enhance with RAG context if available
+      let finalContent = llmResponse.content;
+      
+      try {
+        if (this.ragService && !this.needsToolSupport(message.content)) {
+          const ragResult = await this.ragService.handleMultimodalMessage(
+            message,
+            message.from,
+            conversation
+          );
+          
+          if (ragResult.ragContext && ragResult.ragContext.relevantContent.length > 0) {
+            finalContent += `\n\n📚 *Additional context:* ${ragResult.ragContext.totalSources} documents found`;
+          }
+        }
+      } catch (ragError) {
+        console.warn('RAG enhancement failed in hybrid mode:', ragError);
+      }
+
+      // Add tool usage indicator if tools were used
+      if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
+        const toolNames = llmResponse.toolCalls.map(tc => tc.name);
+        const uniqueTools = [...new Set(toolNames)];
+        const toolCounts = toolNames.reduce((acc, name) => {
+          acc[name] = (acc[name] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        
+        const toolSummary = uniqueTools.map(name => 
+          (toolCounts[name] || 0) > 1 ? `${name} (${toolCounts[name]}x)` : name
+        ).join(', ');
+        
+        const executionMode = llmResponse.toolCalls.length > 1 ? 'parallel' : 'single';
+        finalContent = `🔧 *Used tools (${executionMode}): ${toolSummary}*\n\n${finalContent}`;
+      }
+      
+      return {
+        content: finalContent,
+        quotedMessage: message.id
+      };
+
+    } catch (error) {
+      console.error('Error generating hybrid response:', error);
       return {
         content: '🤔 I encountered an issue processing your request. Please try again.',
       };
@@ -480,6 +624,134 @@ export class Chatbot extends EventEmitter {
     return mathPatterns.some(pattern => pattern.test(message));
   }
 
+  private isWeatherQuery(message: string): boolean {
+    const weatherPatterns = [
+      /weather/i,
+      /temperature/i,
+      /forecast/i,
+      /rain/i,
+      /sunny/i,
+      /cloudy/i,
+      /humidity/i,
+      /wind/i
+    ];
+    
+    return weatherPatterns.some(pattern => pattern.test(message));
+  }
+
+  private isSearchQuery(message: string): boolean {
+    const searchPatterns = [
+      /search/i,
+      /find/i,
+      /look up/i,
+      /google/i,
+      /what is/i,
+      /who is/i,
+      /news/i,
+      /latest/i,
+      /current/i,
+      /recent/i
+    ];
+    
+    return searchPatterns.some(pattern => pattern.test(message));
+  }
+
+  private isTimeQuery(message: string): boolean {
+    const timePatterns = [
+      /time/i,
+      /date/i,
+      /timezone/i,
+      /clock/i,
+      /what day/i,
+      /today/i,
+      /tomorrow/i,
+      /yesterday/i
+    ];
+    
+    return timePatterns.some(pattern => pattern.test(message));
+  }
+
+  private isUUIDQuery(message: string): boolean {
+    const uuidPatterns = [
+      /uuid/i,
+      /unique.*id/i,
+      /generate.*id/i,
+      /random.*id/i,
+      /identifier/i
+    ];
+    
+    return uuidPatterns.some(pattern => pattern.test(message));
+  }
+
+  private needsToolSupport(message: string): boolean {
+    return this.isMathQuery(message) || 
+           this.isWeatherQuery(message) || 
+           this.isSearchQuery(message) || 
+           this.isTimeQuery(message) || 
+           this.isUUIDQuery(message);
+  }
+
+  private suggestsMultipleTools(message: string): boolean {
+    const multipleToolIndicators = [
+      // Multiple calculations
+      /(?:calculate|compute|solve).*(?:and|also|plus|then).*(?:calculate|compute|solve)/i,
+      /\d+\s*[+\-*/x÷]\s*\d+.*(?:and|also|plus|then).*\d+\s*[+\-*/x÷]\s*\d+/,
+      
+      // Multiple weather queries
+      /weather.*(?:and|also|plus|then).*weather/i,
+      /weather.*(?:in|for).*(?:and|also|plus|then).*(?:in|for)/i,
+      
+      // Multiple search queries
+      /search.*(?:and|also|plus|then).*search/i,
+      /find.*(?:and|also|plus|then).*find/i,
+      
+      // Multiple UUID requests
+      /(?:generate|create).*(?:\d+|multiple|several|few).*(?:uuid|id)/i,
+      
+      // Mixed tool requests
+      /(?:calculate|weather|search|time|uuid).*(?:and|also|plus|then).*(?:calculate|weather|search|time|uuid)/i,
+      
+      // Lists and enumerations
+      /(?:first|second|third|1st|2nd|3rd)/i,
+      /(?:both|all|each)/i
+    ];
+    
+    return multipleToolIndicators.some(pattern => pattern.test(message));
+  }
+
+  private async generateSmartResponse(message: BotMessage): Promise<BotResponse | null> {
+    try {
+      // Check if query suggests multiple tools
+      const isMultiTool = this.suggestsMultipleTools(message.content);
+      
+      // If query needs tool support, use generateResponse with tools
+      if (this.needsToolSupport(message.content)) {
+        if (isMultiTool) {
+          console.log(`🔧 Multi-tool query detected: ${message.content.substring(0, 50)}... (parallel execution expected)`);
+        } else {
+          console.log(`🔧 Tool-relevant query detected: ${message.content.substring(0, 50)}...`);
+        }
+        return await this.generateResponse(message);
+      }
+      
+      // For knowledge queries, use RAG if available
+      if (this.ragService && this.config.enableRAG !== false) {
+        console.log(`🔧 Knowledge query detected, using RAG: ${message.content.substring(0, 50)}...`);
+        return await this.generateRAGResponse(message);
+      }
+      
+      // Fallback to regular response with tools
+      console.log(`🔧 General query, using tools: ${message.content.substring(0, 50)}...`);
+      return await this.generateResponse(message);
+      
+    } catch (error) {
+      console.error('Error in smart response generation:', error);
+      return {
+        content: '🚨 Sorry, I encountered an error processing your message. Please try again.',
+      };
+    }
+  }
+
   private async handleToolQuery(message: BotMessage): Promise<BotResponse> {
     const localTools = this.toolManager.getAvailableTools();
     const mcpTools = this.mcpService ? this.mcpService.getAvailableTools() : [];
@@ -531,12 +803,25 @@ ${toolDescriptions}
 • If a tool fails, explain the issue and offer alternatives
 • You have access to ${availableTools.length} tools - use them actively and frequently
 
+**PARALLEL TOOL EXECUTION:**
+• **You can call MULTIPLE tools simultaneously** - All tools run in parallel for faster responses
+• **You can call the SAME tool multiple times** - For different parameters or calculations
+• **Use multiple tools for complex queries** - Combine calculator + search + weather etc.
+• **Tools execute concurrently** - No need to wait for one tool to complete before calling another
+
 **Examples of MANDATORY tool usage:**
 • "Calculate 2+2" → MUST use calculator tool
 • "What's the weather?" → MUST use weather tool
 • "What time is it?" → MUST use time tool
 • "Search for news" → MUST use search tool
-• "Generate a UUID" → MUST use uuid tool`;
+• "Generate a UUID" → MUST use uuid tool
+
+**Examples of PARALLEL tool usage:**
+• "Calculate 2+2 and 3+3" → Use calculator tool TWICE simultaneously
+• "Weather in NYC and London" → Use weather tool TWICE simultaneously
+• "What time is it and generate a UUID" → Use time tool AND uuid tool simultaneously
+• "Calculate 5*5, search for AI news, and get weather" → Use calculator, search, AND weather tools simultaneously
+• "Generate 3 UUIDs" → Use uuid tool THREE times simultaneously`;
   }
 
   private updateConversationHistory(userId: string, userMessage: string, botResponse: string): void {
