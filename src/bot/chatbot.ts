@@ -1,8 +1,9 @@
 import { EventEmitter } from 'events';
 import { WhatsAppService, DatabaseService, EmbeddingsService, VectorService, RAGService } from '../services';
-import { LLMProvider, BotMessage, BotResponse, MessageMiddleware, LLMMessage } from '../types';
+import { LLMProvider, BotMessage, BotResponse, MessageMiddleware, LLMMessage, ToolCall, ToolContext } from '../types';
 import { createClient } from '@supabase/supabase-js';
 import NodeCache from 'node-cache';
+import { ToolManager } from '../tools';
 
 export interface ChatbotConfig {
   llmProvider: LLMProvider;
@@ -41,6 +42,7 @@ export class Chatbot extends EventEmitter {
   private vectorService?: VectorService;
   private ragService?: RAGService;
   private cache: NodeCache;
+  private toolManager: ToolManager;
 
   constructor(whatsapp: WhatsAppService, config: ChatbotConfig) {
     super();
@@ -53,6 +55,9 @@ export class Chatbot extends EventEmitter {
       stdTTL: config.cacheConfig?.ttlSeconds || 3600, // 1 hour default
       maxKeys: config.cacheConfig?.maxKeys || 1000
     });
+
+    // Initialize ToolManager
+    this.toolManager = new ToolManager();
 
     this.initializeServices();
     this.setupMiddleware();
@@ -87,11 +92,15 @@ export class Chatbot extends EventEmitter {
         }
       }
 
+      // Initialize ToolManager
+      await this.toolManager.initialize();
+
       console.log('🔧 Services initialized:', {
         database: !!this.databaseService,
         embeddings: !!this.embeddingsService,
         vector: !!this.vectorService,
         rag: !!this.ragService,
+        tools: this.toolManager.getAvailableTools().length,
         vision: this.config.enableVision !== false,
         pdf: this.config.enablePDF !== false
       });
@@ -196,14 +205,39 @@ export class Chatbot extends EventEmitter {
 
       const options: any = {
         maxTokens: this.config.maxTokens || 1000,
-        temperature: this.config.temperature || 0.7
+        temperature: this.config.temperature || 0.7,
+        tools: this.toolManager.getAvailableTools()
       };
 
       if (this.config.systemPrompt) {
         options.systemPrompt = this.config.systemPrompt;
       }
 
-      const llmResponse = await this.llmProvider.generateResponse(messages, options);
+      let llmResponse = await this.llmProvider.generateResponse(messages, options);
+
+      // Handle tool calls if present
+      if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
+        const toolResults = await this.executeToolCalls(llmResponse.toolCalls, message);
+        
+        // Add tool results to conversation and get final response
+        const updatedMessages = [
+          ...messages,
+          {
+            role: 'assistant' as const,
+            content: llmResponse.content || 'I\'ll help you with that.'
+          },
+          ...toolResults.map(result => ({
+            role: 'user' as const,
+            content: `Tool result: ${JSON.stringify(result.result)}`
+          }))
+        ];
+
+        // Get final response from LLM with tool results
+        llmResponse = await this.llmProvider.generateResponse(updatedMessages, {
+          ...options,
+          tools: [] // Don't use tools in the follow-up call
+        });
+      }
 
       return {
         content: llmResponse.content,
@@ -216,6 +250,48 @@ export class Chatbot extends EventEmitter {
         content: '🤔 I need a moment to think. Please try again.',
       };
     }
+  }
+
+  private async executeToolCalls(toolCalls: Array<{ id: string; name: string; parameters: any }>, message: BotMessage) {
+    const toolContext: ToolContext = {
+      message,
+      services: {
+        ...(this.databaseService && { database: this.databaseService }),
+        ...(this.ragService && { rag: this.ragService }),
+        cache: this.cache
+      }
+    };
+
+    // Get user and conversation data if database is available
+    if (this.databaseService) {
+      try {
+        const { user, conversation } = await this.databaseService.saveUserMessage(message);
+        toolContext.user = user;
+        toolContext.conversation = conversation;
+      } catch (error) {
+        console.warn('Could not get user/conversation for tool context:', error);
+      }
+    }
+
+    const results = [];
+    for (const toolCall of toolCalls) {
+      try {
+        const result = await this.toolManager.executeTool(toolCall, toolContext);
+        results.push(result);
+        console.log(`🔧 Tool ${toolCall.name} executed:`, result.result.success ? '✅ Success' : '❌ Failed');
+      } catch (error) {
+        console.error(`❌ Error executing tool ${toolCall.name}:`, error);
+        results.push({
+          toolCallId: toolCall.id,
+          result: {
+            success: false,
+            error: `Execution error: ${error instanceof Error ? error.message : 'Unknown error'}`
+          }
+        });
+      }
+    }
+
+    return results;
   }
 
   private async generateRAGResponse(message: BotMessage): Promise<BotResponse | null> {
@@ -331,6 +407,7 @@ export class Chatbot extends EventEmitter {
 
   async stop(): Promise<void> {
     await this.whatsapp.stop();
+    await this.toolManager.cleanup();
   }
 
   clearConversationHistory(userId?: string): void {
@@ -356,6 +433,7 @@ export class Chatbot extends EventEmitter {
       pdf: boolean;
       database: boolean;
       cache: boolean;
+      tools: number;
     };
     cache: {
       keys: number;
@@ -375,7 +453,8 @@ export class Chatbot extends EventEmitter {
         vision: this.config.enableVision !== false,
         pdf: this.config.enablePDF !== false,
         database: !!this.databaseService,
-        cache: true
+        cache: true,
+        tools: this.toolManager.getAvailableTools().length
       },
       cache: {
         keys: this.cache.keys().length,
@@ -436,5 +515,26 @@ export class Chatbot extends EventEmitter {
     } else {
       this.cache.set(key, value);
     }
+  }
+
+  // Tool management methods
+  getToolStats() {
+    return this.toolManager.getToolStats();
+  }
+
+  getAvailableTools() {
+    return this.toolManager.getAvailableTools();
+  }
+
+  enableTool(toolName: string): boolean {
+    return this.toolManager.enableTool(toolName);
+  }
+
+  disableTool(toolName: string): boolean {
+    return this.toolManager.disableTool(toolName);
+  }
+
+  async reloadTool(toolName: string): Promise<boolean> {
+    return await this.toolManager.reloadTool(toolName);
   }
 }

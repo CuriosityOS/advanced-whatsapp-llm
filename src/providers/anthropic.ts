@@ -26,19 +26,36 @@ export class AnthropicProvider extends BaseLLMProvider {
       maxTokens = this.defaultMaxTokens,
       temperature = this.defaultTemperature,
       model = this.defaultModel,
-      systemPrompt
+      systemPrompt,
+      tools,
+      toolChoice = 'auto'
     } = options;
 
     try {
       const anthropicMessages = this.convertMessages(messages, systemPrompt);
       
-      const response = await this.client.messages.create({
+      const requestParams: any = {
         model,
         max_tokens: maxTokens,
         temperature,
         messages: anthropicMessages.messages,
         ...(anthropicMessages.system && { system: anthropicMessages.system })
-      });
+      };
+
+      // Add tools if provided
+      if (tools && tools.length > 0) {
+        requestParams.tools = tools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          input_schema: tool.parameters
+        }));
+
+        if (toolChoice !== 'auto') {
+          requestParams.tool_choice = toolChoice === 'none' ? { type: 'auto' } : { type: 'tool', name: toolChoice };
+        }
+      }
+
+      const response = await this.client.messages.create(requestParams);
 
       return this.parseResponse(response);
     } catch (error) {
@@ -105,12 +122,14 @@ export class AnthropicProvider extends BaseLLMProvider {
   }
 
   private parseResponse(response: Anthropic.Messages.Message): LLMResponse {
-    const content = response.content
-      .filter(block => block.type === 'text')
+    const textBlocks = response.content.filter(block => block.type === 'text');
+    const toolBlocks = response.content.filter(block => block.type === 'tool_use');
+
+    const content = textBlocks
       .map(block => (block as any).text)
       .join('');
 
-    return {
+    const result: LLMResponse = {
       content,
       usage: {
         inputTokens: response.usage.input_tokens,
@@ -118,5 +137,19 @@ export class AnthropicProvider extends BaseLLMProvider {
         totalTokens: response.usage.input_tokens + response.usage.output_tokens
       }
     };
+
+    // Add tool calls if present
+    if (toolBlocks.length > 0) {
+      result.toolCalls = toolBlocks.map(block => {
+        const toolUse = block as any;
+        return {
+          id: toolUse.id,
+          name: toolUse.name,
+          parameters: toolUse.input
+        };
+      });
+    }
+
+    return result;
   }
 }

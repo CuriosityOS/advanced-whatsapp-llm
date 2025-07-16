@@ -26,6 +26,11 @@ export interface LLMResponse {
     outputTokens: number;
     totalTokens: number;
   };
+  toolCalls?: Array<{
+    id: string;
+    name: string;
+    parameters: any;
+  }>;
 }
 
 export interface LLMProvider {
@@ -38,6 +43,12 @@ export interface LLMGenerationOptions {
   temperature?: number;
   model?: string;
   systemPrompt?: string;
+  tools?: Array<{
+    name: string;
+    description: string;
+    parameters: any;
+  }>;
+  toolChoice?: 'auto' | 'none' | string;
 }
 
 export interface LLMConfig {

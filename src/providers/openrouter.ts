@@ -33,19 +33,41 @@ export class OpenRouterProvider extends BaseLLMProvider {
       maxTokens = this.defaultMaxTokens,
       temperature = this.defaultTemperature,
       model = this.defaultModel,
-      systemPrompt
+      systemPrompt,
+      tools,
+      toolChoice = 'auto'
     } = options;
 
     try {
       const openRouterMessages = this.convertMessages(messages, systemPrompt);
       
-      const response = await this.client.post('/chat/completions', {
+      const requestBody: any = {
         model,
         messages: openRouterMessages,
         max_tokens: maxTokens,
         temperature,
         stream: false
-      });
+      };
+
+      // Add tools if provided (OpenAI format)
+      if (tools && tools.length > 0) {
+        requestBody.tools = tools.map(tool => ({
+          type: 'function',
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters
+          }
+        }));
+
+        if (toolChoice !== 'auto') {
+          requestBody.tool_choice = toolChoice === 'none' ? 'none' : { type: 'function', function: { name: toolChoice } };
+        } else {
+          requestBody.tool_choice = 'auto';
+        }
+      }
+
+      const response = await this.client.post('/chat/completions', requestBody);
 
       return this.parseResponse(response.data);
     } catch (error) {
@@ -95,7 +117,8 @@ export class OpenRouterProvider extends BaseLLMProvider {
       throw new Error('No response choices returned from OpenRouter');
     }
 
-    const content = choice.message?.content || '';
+    const message = choice.message;
+    const content = message?.content || '';
     const usage = response.usage;
 
     const result: LLMResponse = {
@@ -108,6 +131,15 @@ export class OpenRouterProvider extends BaseLLMProvider {
         outputTokens: usage.completion_tokens || 0,
         totalTokens: usage.total_tokens || 0
       };
+    }
+
+    // Handle tool calls (OpenAI format)
+    if (message?.tool_calls && message.tool_calls.length > 0) {
+      result.toolCalls = message.tool_calls.map((toolCall: any) => ({
+        id: toolCall.id,
+        name: toolCall.function.name,
+        parameters: JSON.parse(toolCall.function.arguments || '{}')
+      }));
     }
 
     return result;
