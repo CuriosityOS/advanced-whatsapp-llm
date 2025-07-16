@@ -54,3 +54,6 @@ test-*.js
 # Temporary files
 *.tmp
 *.temp
+
+# Project documentation (keep private)
+PROJECT.md
