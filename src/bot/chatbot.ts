@@ -144,6 +144,11 @@ export class Chatbot extends EventEmitter {
 
         // Rate limiting removed for unrestricted usage
 
+        // Check for tool-related queries
+        if (this.isToolQuery(message.content)) {
+          return await this.handleToolQuery(message);
+        }
+
         // Use RAG for enhanced responses if available
         const response = this.ragService && this.config.enableRAG !== false
           ? await this.generateRAGResponse(message)
@@ -231,15 +236,20 @@ export class Chatbot extends EventEmitter {
       const mcpTools = this.mcpService ? this.mcpService.getAvailableTools() : [];
       const availableTools = [...localTools, ...mcpTools];
       
+      console.log(`🔧 Debug: Available tools count: ${availableTools.length}`);
+      console.log(`🔧 Debug: Tool names: ${availableTools.map(t => t.name).join(', ')}`);
+      
       const options: any = {
         maxTokens: this.config.maxTokens || 1000,
         temperature: this.config.temperature || 0.7,
         tools: availableTools
       };
 
-      if (this.config.systemPrompt) {
-        options.systemPrompt = this.generateDynamicSystemPrompt(availableTools);
-      }
+      // Always use dynamic system prompt generation
+      const dynamicPrompt = this.generateDynamicSystemPrompt(availableTools);
+      options.systemPrompt = dynamicPrompt;
+      console.log(`🔧 Debug: Using dynamic system prompt with ${availableTools.length} tools`);
+      console.log(`🔧 Debug: System prompt preview: ${dynamicPrompt.substring(0, 200)}...`);
 
       let llmResponse = await this.llmProvider.generateResponse(messages, options);
 
@@ -419,11 +429,51 @@ export class Chatbot extends EventEmitter {
     return history;
   }
 
+  private isToolQuery(message: string): boolean {
+    const toolQueries = [
+      'what tools do you have',
+      'what tools',
+      'what can you do',
+      'what are your capabilities',
+      'list tools',
+      'available tools',
+      'your tools',
+      'help me'
+    ];
+    
+    const lowerMessage = message.toLowerCase();
+    return toolQueries.some(query => lowerMessage.includes(query));
+  }
+
+  private async handleToolQuery(message: BotMessage): Promise<BotResponse> {
+    const localTools = this.toolManager.getAvailableTools();
+    const mcpTools = this.mcpService ? this.mcpService.getAvailableTools() : [];
+    const availableTools = [...localTools, ...mcpTools];
+    
+    if (availableTools.length === 0) {
+      return {
+        content: '😔 I don\'t have any external tools available right now, but I can help you with:\n\n• Answering questions and providing information\n• Writing and editing text\n• Analysis and problem-solving\n• Math and calculations\n• Coding help\n• Creative tasks\n• General conversation\n\nIs there something specific you\'d like help with?',
+        quotedMessage: message.id
+      };
+    }
+
+    const toolDescriptions = availableTools.map(tool => 
+      `• **${tool.name}** - ${tool.description}`
+    ).join('\n');
+
+    const response = `🔧 **Available Tools (${availableTools.length}):**\n${toolDescriptions}\n\n📱 **Core Capabilities:**\n• Text conversation and Q&A\n• Image analysis and description (vision)\n• PDF document processing and Q&A\n• Document retrieval and knowledge search (RAG)\n• Mathematical calculations\n• Web search and information retrieval\n• Weather and time information\n• UUID and identifier generation\n\n🎯 **How to use:** Just ask me naturally! I'll automatically use the appropriate tool for your request.`;
+
+    return {
+      content: response,
+      quotedMessage: message.id
+    };
+  }
+
   private generateDynamicSystemPrompt(availableTools: any[]): string {
     const basePrompt = this.config.systemPrompt || 'You are a helpful WhatsApp chatbot assistant.';
     
     if (availableTools.length === 0) {
-      return basePrompt;
+      return basePrompt + '\n\n**Note:** No external tools are currently available.';
     }
 
     const toolDescriptions = availableTools.map(tool => 
@@ -435,11 +485,12 @@ export class Chatbot extends EventEmitter {
 🔧 **Available Tools:**
 ${toolDescriptions}
 
-**Instructions:**
+**Key Instructions:**
+• When asked "What tools do you have?" or about your capabilities, list the available tools above
 • Use tools when appropriate to provide accurate, up-to-date information
-• When asked about your capabilities or tools, mention the available tools above
 • Always use the most appropriate tool for the user's request
-• If a tool fails, explain the issue and offer alternatives`;
+• If a tool fails, explain the issue and offer alternatives
+• You have access to ${availableTools.length} tools - use them to help users effectively`;
   }
 
   private updateConversationHistory(userId: string, userMessage: string, botResponse: string): void {

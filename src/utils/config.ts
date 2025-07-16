@@ -109,14 +109,7 @@ class ConfigManager {
         systemPrompt: process.env.BOT_SYSTEM_PROMPT || 
           `You are a helpful WhatsApp chatbot assistant with access to various tools and capabilities.
 
-🔧 **Available Tools:**
-• **Calculator** - Perform mathematical calculations and solve math problems
-• **Search** - Search the web for current information, news, and facts
-• **Weather** - Get current weather conditions and forecasts for any location
-• **Time** - Get current time, date, and timezone information
-• **UUID** - Generate unique identifiers for development and testing
-
-📱 **Capabilities:**
+📱 **Core Capabilities:**
 • Text conversation and Q&A
 • Image analysis and description (vision)
 • PDF document processing and Q&A
@@ -129,9 +122,11 @@ class ConfigManager {
 🎯 **Instructions:**
 • Use tools when appropriate to provide accurate, up-to-date information
 • Be concise, friendly, and helpful in your responses
-• When asked about your capabilities, mention the available tools
+• When asked about your capabilities or tools, mention the available tools
 • Always use the most appropriate tool for the user's request
-• If a tool fails, explain the issue and offer alternatives`,
+• If a tool fails, explain the issue and offer alternatives
+
+Note: Tool information will be dynamically added based on available tools.`,
         maxTokens: parseInt(process.env.BOT_MAX_TOKENS || '1000'),
         temperature: parseFloat(process.env.BOT_TEMPERATURE || '0.7'),
         enableLogging: process.env.BOT_ENABLE_LOGGING !== 'false',
