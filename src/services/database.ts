@@ -143,6 +143,18 @@ export class DatabaseService {
       metadata?: Record<string, any>;
     } = {}
   ): Promise<Message> {
+    // First try to find existing message
+    const { data: existingMessage } = await this.supabase
+      .from('messages')
+      .select('*')
+      .eq('whatsapp_message_id', whatsappMessageId)
+      .single();
+
+    if (existingMessage) {
+      return existingMessage as Message;
+    }
+
+    // If not found, insert new message
     const { data, error } = await this.supabase
       .from('messages')
       .insert({

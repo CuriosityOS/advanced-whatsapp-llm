@@ -3,6 +3,8 @@ export { DatabaseService } from './database';
 export { VisionService } from './vision';
 export { PDFService } from './pdf';
 export { EmbeddingsService } from './embeddings';
+export { SupabaseEmbeddingsService } from './supabase-embeddings';
+export { HybridEmbeddingsService } from './hybrid-embeddings';
 export { VectorService } from './vector';
 export { RAGService } from './rag';
 export { MCPService, createDefaultMCPConfig } from './mcp';
