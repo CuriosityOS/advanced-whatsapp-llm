@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { BaseLLMProvider } from './base';
 import { LLMMessage, LLMResponse, LLMGenerationOptions, LLMContent } from '../types';
+import { logger } from '../utils/logger';
 
 export class AnthropicProvider extends BaseLLMProvider {
   readonly name = 'anthropic';
@@ -50,31 +51,29 @@ export class AnthropicProvider extends BaseLLMProvider {
           input_schema: tool.parameters
         }));
         
-        console.log(`🔧 Debug: Sending ${tools.length} tools to Anthropic API`);
-        console.log(`🔧 Debug: Tool names: ${tools.map(t => t.name).join(', ')}`);
-        console.log(`🔧 Debug: Tool choice: ${toolChoice}`);
+        logger.tool(`Sending ${tools.length} tools to Anthropic API`);
+        logger.debug(`Tool names: ${tools.map(t => t.name).join(', ')}`);
+        if (toolChoice !== 'auto') {
+          logger.debug(`Tool choice: ${toolChoice}`);
+        }
 
         if (toolChoice !== 'auto') {
           requestParams.tool_choice = toolChoice === 'none' ? { type: 'auto' } : { type: 'tool', name: toolChoice };
         }
       } else {
-        console.log(`🔧 Debug: No tools provided to Anthropic API`);
+        logger.debug('No tools provided to Anthropic API');
       }
 
-      console.log(`🔧 Debug: Anthropic API request params:`, {
-        model: requestParams.model,
-        toolsCount: requestParams.tools?.length || 0,
-        systemPromptLength: requestParams.system?.length || 0,
-        messageCount: requestParams.messages?.length || 0
-      });
+      logger.provider(`API Request: ${requestParams.model} | ${requestParams.tools?.length || 0} tools | ${requestParams.messages?.length || 0} messages`);
+      if (requestParams.system?.length) {
+        logger.debug(`System prompt: ${requestParams.system.length} chars`);
+      }
       
       const response = await this.client.messages.create(requestParams);
       
-      console.log(`🔧 Debug: Anthropic API response:`, {
-        contentBlocks: response.content.length,
-        toolUseBlocks: response.content.filter(block => block.type === 'tool_use').length,
-        textBlocks: response.content.filter(block => block.type === 'text').length
-      });
+      const toolUseBlocks = response.content.filter(block => block.type === 'tool_use').length;
+      const textBlocks = response.content.filter(block => block.type === 'text').length;
+      logger.provider(`API Response: ${textBlocks} text blocks, ${toolUseBlocks} tool calls`);
 
       return this.parseResponse(response);
     } catch (error) {
@@ -109,9 +108,9 @@ export class AnthropicProvider extends BaseLLMProvider {
 
     if (systemContent) {
       result.system = systemContent;
-      console.log(`🔧 Debug: System prompt length: ${typeof systemContent === 'string' ? systemContent.length : 'non-string'}`);
       if (typeof systemContent === 'string') {
-        console.log(`🔧 Debug: System prompt preview: ${systemContent.substring(0, 300)}...`);
+        logger.debug(`System prompt: ${systemContent.length} chars`);
+        logger.debug(`Prompt preview: ${systemContent.substring(0, 100)}...`);
       }
     }
 

@@ -4,6 +4,8 @@ import { LLMProvider, BotMessage, BotResponse, MessageMiddleware, LLMMessage, To
 import { createClient } from '@supabase/supabase-js';
 import NodeCache from 'node-cache';
 import { ToolManager } from '../tools';
+import { logger } from '../utils/logger';
+import { art } from '../utils/console-art';
 
 export interface ChatbotConfig {
   llmProvider: LLMProvider;
@@ -117,20 +119,21 @@ export class Chatbot extends EventEmitter {
         }
       }
 
-      console.log('🔧 Services initialized:', {
-        database: !!this.databaseService,
-        embeddings: !!this.embeddingsService,
-        vector: !!this.vectorService,
-        rag: !!this.ragService,
-        mcp: !!this.mcpService,
-        tools: this.toolManager.getAvailableTools().length,
-        mcpTools: this.mcpService ? this.mcpService.getAvailableTools().length : 0,
-        vision: this.config.enableVision !== false,
-        pdf: this.config.enablePDF !== false
+      logger.success('Services initialized successfully');
+      logger.stats('Service Status', {
+        database: !!this.databaseService ? '✅ Connected' : '❌ Disabled',
+        embeddings: !!this.embeddingsService ? '✅ Ready' : '❌ Disabled', 
+        vector: !!this.vectorService ? '✅ Ready' : '❌ Disabled',
+        rag: !!this.ragService ? '✅ Ready' : '❌ Disabled',
+        mcp: !!this.mcpService ? '✅ Connected' : '❌ Disabled',
+        'local tools': this.toolManager.getAvailableTools().length,
+        'mcp tools': this.mcpService ? this.mcpService.getAvailableTools().length : 0,
+        vision: this.config.enableVision !== false ? '✅ Enabled' : '❌ Disabled',
+        pdf: this.config.enablePDF !== false ? '✅ Enabled' : '❌ Disabled'
       });
 
     } catch (error) {
-      console.error('❌ Service initialization error:', error);
+      logger.error(`Service initialization failed: ${error}`);
       // Continue without advanced features if initialization fails
     }
   }
@@ -226,7 +229,7 @@ export class Chatbot extends EventEmitter {
         ...conversation,
         {
           role: 'user',
-          content: this.prepareMessageContent(message)
+          content: await this.prepareMessageContent(message)
         }
       ];
 
@@ -234,8 +237,8 @@ export class Chatbot extends EventEmitter {
       const mcpTools = this.mcpService ? this.mcpService.getAvailableTools() : [];
       const availableTools = [...localTools, ...mcpTools];
       
-      console.log(`🔧 Debug: Available tools count: ${availableTools.length}`);
-      console.log(`🔧 Debug: Tool names: ${availableTools.map(t => t.name).join(', ')}`);
+      logger.tool(`Available tools: ${availableTools.length} total (${localTools.length} local, ${mcpTools.length} MCP)`);
+      logger.debug(`Tool names: ${availableTools.map(t => t.name).join(', ')}`);
       
       const options: any = {
         maxTokens: this.config.maxTokens || 1000,
@@ -246,14 +249,15 @@ export class Chatbot extends EventEmitter {
       // Always use dynamic system prompt generation
       const dynamicPrompt = this.generateDynamicSystemPrompt(availableTools);
       options.systemPrompt = dynamicPrompt;
-      console.log(`🔧 Debug: Using dynamic system prompt with ${availableTools.length} tools`);
-      console.log(`🔧 Debug: System prompt preview: ${dynamicPrompt.substring(0, 200)}...`);
+      logger.provider(`Using dynamic system prompt with ${availableTools.length} tools`);
+      logger.debug(`System prompt preview: ${dynamicPrompt.substring(0, 200)}...`);
 
       let llmResponse = await this.llmProvider.generateResponse(messages, options);
 
-      console.log(`🔧 Debug: LLM Response received. Tool calls: ${llmResponse.toolCalls ? llmResponse.toolCalls.length : 0}`);
+      logger.provider(`LLM response received with ${llmResponse.toolCalls ? llmResponse.toolCalls.length : 0} tool calls`);
       if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
-        console.log(`🔧 Debug: Tool calls detected:`, llmResponse.toolCalls.map(tc => tc.name));
+        const toolNames = llmResponse.toolCalls.map(tc => tc.name);
+        logger.tool(`Tool calls detected: ${toolNames.join(', ')}`);
       }
 
       // Handle tool calls if present
@@ -279,7 +283,7 @@ export class Chatbot extends EventEmitter {
           tools: [] // Don't use tools in the follow-up call
         });
         
-        console.log(`🔧 Debug: Final response after tool execution:`, llmResponse.content.substring(0, 100));
+        logger.tool(`Final response after tool execution: ${llmResponse.content.substring(0, 80)}...`);
       }
 
       // Add tool usage indicator if tools were used
@@ -335,7 +339,11 @@ export class Chatbot extends EventEmitter {
     }
 
     // Execute all tools in parallel
-    console.log(`🔧 Executing ${toolCalls.length} tools in parallel:`, toolCalls.map(tc => tc.name));
+    const toolNames = toolCalls.map(tc => tc.name);
+    const isParallel = toolCalls.length > 1;
+    const mode = isParallel ? 'parallel' : 'single';
+    
+    logger.toolSuccess(`Executing ${toolCalls.length} tools in ${mode} mode: ${toolNames.join(', ')}`);
     const startTime = Date.now();
 
     const toolPromises = toolCalls.map(async (toolCall) => {
@@ -371,7 +379,11 @@ export class Chatbot extends EventEmitter {
           const toolEndTime = Date.now();
           const toolExecutionTime = toolEndTime - toolStartTime;
           
-          console.log(`🔧 Tool ${toolCall.name} executed in ${toolExecutionTime}ms:`, result.result.success ? '✅ Success' : '❌ Failed');
+          if (result.result.success) {
+            logger.tool(`${art.toolBadge(toolCall.name)} executed successfully in ${toolExecutionTime}ms`);
+          } else {
+            logger.error(`${art.toolBadge(toolCall.name)} failed in ${toolExecutionTime}ms`);
+          }
           return result;
           
         } catch (error) {
@@ -397,7 +409,14 @@ export class Chatbot extends EventEmitter {
     const results = await Promise.all(toolPromises);
     const totalExecutionTime = Date.now() - startTime;
     
-    console.log(`🔧 All ${toolCalls.length} tools completed in ${totalExecutionTime}ms (parallel execution)`);
+    const successCount = results.filter(r => (r as any)?.result?.success).length;
+    const executionMode = isParallel ? 'parallel' : 'single';
+    
+    logger.toolSuccess(`Tool execution complete: ${successCount}/${toolCalls.length} succeeded in ${totalExecutionTime}ms (${executionMode})`);
+    
+    if (isParallel && totalExecutionTime < 5000) {
+      logger.success(`⚡ Fast parallel execution: ${Math.round(totalExecutionTime/toolCalls.length)}ms average per tool`);
+    }
     
     return results;
   }
@@ -410,7 +429,7 @@ export class Chatbot extends EventEmitter {
 
       // Check if the query might need tools even within RAG context
       if (this.needsToolSupport(message.content)) {
-        console.log(`🔧 RAG query with tool support needed: ${message.content.substring(0, 50)}...`);
+        logger.rag(`RAG query with tool support needed: ${message.content.substring(0, 50)}...`);
         return await this.generateHybridResponse(message);
       }
 
@@ -443,14 +462,14 @@ export class Chatbot extends EventEmitter {
 
   private async generateHybridResponse(message: BotMessage): Promise<BotResponse | null> {
     try {
-      console.log(`🔧 Generating hybrid response (RAG + Tools) for: ${message.content.substring(0, 50)}...`);
+      logger.rag(`Generating hybrid response (RAG + Tools) for: ${message.content.substring(0, 50)}...`);
       
       const conversation = this.getConversationHistory(message.from);
       const messages: LLMMessage[] = [
         ...conversation,
         {
           role: 'user',
-          content: this.prepareMessageContent(message)
+          content: await this.prepareMessageContent(message)
         }
       ];
 
@@ -458,7 +477,7 @@ export class Chatbot extends EventEmitter {
       const mcpTools = this.mcpService ? this.mcpService.getAvailableTools() : [];
       const availableTools = [...localTools, ...mcpTools];
       
-      console.log(`🔧 Hybrid mode - Available tools: ${availableTools.length}`);
+      logger.tool(`Hybrid mode - Available tools: ${availableTools.length}`);
       
       const options: any = {
         maxTokens: this.config.maxTokens || 1000,
@@ -545,13 +564,44 @@ export class Chatbot extends EventEmitter {
     }
   }
 
-  private prepareMessageContent(message: BotMessage): string | any[] {
+  private async prepareMessageContent(message: BotMessage): Promise<string | any[]> {
     // Handle multimodal content (images + text)
     if (message.hasMedia && message.media && this.config.enableVision !== false) {
       const { VisionService } = require('../services/vision');
       
       if (message.media.type === 'image' && VisionService.isImageSupported(message.media.mimetype || '')) {
         return VisionService.createMultimodalContent(message.content, message.media);
+      }
+    }
+
+    // Handle PDF content
+    if (message.hasMedia && message.media && message.media.type === 'document') {
+      const { PDFService } = require('../services/pdf');
+      
+      if (PDFService.isPDFFile(message.media)) {
+        console.log(`📄 Processing PDF: ${message.media.filename || 'unknown'}`);
+        
+        try {
+          const pdfResult = await PDFService.processPDF(message.media);
+          
+          if (pdfResult.success) {
+            console.log(`✅ PDF processed successfully: ${pdfResult.metadata.pages} pages, ${pdfResult.metadata.wordCount} words`);
+            
+            // Create enhanced content with PDF text
+            const pdfSummary = PDFService.createPDFSummary(pdfResult);
+            const enhancedContent = message.content 
+              ? `${message.content}\n\n${pdfSummary}`
+              : pdfSummary;
+            
+            return enhancedContent;
+          } else {
+            console.log(`❌ PDF processing failed: ${pdfResult.error}`);
+            return `${message.content}\n\n❌ PDF processing failed: ${pdfResult.error}`;
+          }
+        } catch (error) {
+          console.error('PDF processing error:', error);
+          return `${message.content}\n\n❌ PDF processing encountered an error: ${error instanceof Error ? error.message : String(error)}`;
+        }
       }
     }
 
@@ -727,21 +777,21 @@ export class Chatbot extends EventEmitter {
       // If query needs tool support, use generateResponse with tools
       if (this.needsToolSupport(message.content)) {
         if (isMultiTool) {
-          console.log(`🔧 Multi-tool query detected: ${message.content.substring(0, 50)}... (parallel execution expected)`);
+          logger.tool(`Multi-tool query detected: ${message.content.substring(0, 50)}... (parallel execution expected)`);
         } else {
-          console.log(`🔧 Tool-relevant query detected: ${message.content.substring(0, 50)}...`);
+          logger.tool(`Tool-relevant query detected: ${message.content.substring(0, 50)}...`);
         }
         return await this.generateResponse(message);
       }
       
       // For knowledge queries, use RAG if available
       if (this.ragService && this.config.enableRAG !== false) {
-        console.log(`🔧 Knowledge query detected, using RAG: ${message.content.substring(0, 50)}...`);
+        logger.rag(`Knowledge query detected, using RAG: ${message.content.substring(0, 50)}...`);
         return await this.generateRAGResponse(message);
       }
       
       // Fallback to regular response with tools
-      console.log(`🔧 General query, using tools: ${message.content.substring(0, 50)}...`);
+      logger.tool(`General query, using tools: ${message.content.substring(0, 50)}...`);
       return await this.generateResponse(message);
       
     } catch (error) {
@@ -843,12 +893,12 @@ ${toolDescriptions}
   private logInteraction(message: BotMessage, response: BotResponse): void {
     if (!this.config.enableLogging) return;
 
-    console.log(`
-📱 Message from ${message.senderName} (${message.from}):
-   "${message.content}"
-🤖 Bot response:
-   "${response.content}"
----`);
+    logger.newLine();
+    logger.message(`${message.senderName} (${message.from.replace('@c.us', '')})`);
+    logger.messageContent(message.content);
+    logger.newLine();
+    logger.botResponse(response.content);
+    logger.separator();
   }
 
   async start(): Promise<void> {

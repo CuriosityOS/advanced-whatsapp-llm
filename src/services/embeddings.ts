@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { configManager } from '../utils/config';
+import { logger } from '../utils/logger';
 
 export interface EmbeddingResult {
   embedding: number[];
@@ -29,6 +30,9 @@ export class EmbeddingsService {
         throw new Error('Text cannot be empty');
       }
 
+      logger.embedding(`Generating embedding for text (${text.length} chars)`);
+      logger.embeddingProgress(`Using model: ${this.model}`);
+
       const response = await this.openai.embeddings.create({
         model: this.model,
         input: text.trim(),
@@ -39,14 +43,17 @@ export class EmbeddingsService {
         throw new Error('No embedding returned from OpenAI');
       }
 
-      return {
+      const result = {
         embedding: response.data[0]!.embedding,
         text: text.trim(),
         tokens: response.usage?.total_tokens || 0
       };
 
+      logger.embeddingSuccess(`Generated ${result.embedding.length}D embedding (${result.tokens} tokens)`);
+      return result;
+
     } catch (error) {
-      console.error('Embedding generation error:', error);
+      logger.error(`Embedding generation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       throw new Error(`Failed to generate embedding: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -64,13 +71,19 @@ export class EmbeddingsService {
         return { embeddings: [], totalTokens: 0 };
       }
 
+      logger.embedding(`Starting batch embedding for ${validTexts.length} texts`);
+      
       // Process in batches to avoid rate limits
       const batchSize = 100; // OpenAI allows up to 2048 inputs per request
       const results: EmbeddingResult[] = [];
       let totalTokens = 0;
+      const totalBatches = Math.ceil(validTexts.length / batchSize);
 
       for (let i = 0; i < validTexts.length; i += batchSize) {
+        const batchIndex = Math.floor(i / batchSize) + 1;
         const batch = validTexts.slice(i, i + batchSize);
+        
+        logger.embeddingProgress(`Processing batch ${batchIndex}/${totalBatches} (${batch.length} items)`);
         
         const response = await this.openai.embeddings.create({
           model: this.model,
@@ -87,6 +100,8 @@ export class EmbeddingsService {
         });
 
         totalTokens += response.usage?.total_tokens || 0;
+        
+        logger.embeddingStats(`Batch ${batchIndex} complete - ${response.data.length} embeddings generated`);
 
         // Add a small delay between batches to be respectful to the API
         if (i + batchSize < validTexts.length) {
@@ -94,13 +109,15 @@ export class EmbeddingsService {
         }
       }
 
+      logger.embeddingSuccess(`Batch embedding complete: ${results.length} embeddings generated (${totalTokens} tokens)`);
+      
       return {
         embeddings: results,
         totalTokens
       };
 
     } catch (error) {
-      console.error('Batch embedding generation error:', error);
+      logger.error(`Batch embedding generation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       throw new Error(`Failed to generate embeddings: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }

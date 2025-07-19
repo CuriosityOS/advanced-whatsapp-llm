@@ -2,6 +2,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { EmbeddingsService, EmbeddingResult } from './embeddings';
 import { PDFService } from './pdf';
 import { MediaAttachment } from '../types/whatsapp';
+import { logger } from '../utils/logger';
 
 export interface Document {
   id: string;
@@ -100,7 +101,10 @@ export class VectorService {
     overlap: number = 200
   ): Promise<DocumentChunk[]> {
     try {
+      logger.vector(`Creating document chunks (size: ${chunkSize}, overlap: ${overlap})`);
       const chunks = PDFService.createChunks(content, chunkSize, overlap);
+      
+      logger.embedding(`Generating embeddings for ${chunks.length} document chunks`);
       const embeddings = await this.embeddings.generateEmbeddings(chunks);
 
       const chunkData = chunks.map((chunk, index) => ({
@@ -115,6 +119,7 @@ export class VectorService {
         }
       }));
 
+      logger.vector(`Storing ${chunkData.length} chunks to vector database`);
       const { data, error } = await this.supabase
         .from('document_chunks')
         .insert(chunkData)
@@ -124,9 +129,10 @@ export class VectorService {
         throw new Error(`Failed to store document chunks: ${error.message}`);
       }
 
+      logger.embeddingSuccess(`Document chunks stored: ${data.length} chunks with embeddings`);
       return data as DocumentChunk[];
     } catch (error) {
-      console.error('Document chunks storage error:', error);
+      logger.error(`Document chunks storage failed: ${error}`);
       throw error;
     }
   }
@@ -138,8 +144,12 @@ export class VectorService {
     tags: string[] = []
   ): Promise<KnowledgeBase> {
     try {
+      logger.embedding(`Adding to knowledge base: "${title}"`);
+      logger.embeddingProgress(`Content length: ${content.length} chars, Tags: ${tags.join(', ') || 'none'}`);
+      
       const embedding = await this.embeddings.generateEmbedding(content);
 
+      logger.vector('Storing knowledge base entry with embedding');
       const { data, error } = await this.supabase
         .from('knowledge_base')
         .insert({
@@ -160,9 +170,10 @@ export class VectorService {
         throw new Error(`Failed to add to knowledge base: ${error.message}`);
       }
 
+      logger.embeddingSuccess(`Knowledge base entry stored: "${title}" (${embedding.tokens} tokens)`);
       return data as KnowledgeBase;
     } catch (error) {
-      console.error('Knowledge base storage error:', error);
+      logger.error(`Knowledge base storage failed: ${error}`);
       throw error;
     }
   }
@@ -186,6 +197,7 @@ export class VectorService {
     } = options;
 
     try {
+      logger.vector(`Searching vector database for: "${query.substring(0, 50)}..."`);
       const queryEmbedding = await this.embeddings.generateEmbedding(query);
       const results: SearchResult[] = [];
 
@@ -202,23 +214,25 @@ export class VectorService {
           documentQuery = documentQuery.eq('documents.user_id', userId);
         }
 
-        const { data: documentChunks, error: docError } = await documentQuery
-          .gte('1 - (embedding <=> $1)', threshold)
-          .order('embedding <=> $1')
-          .limit(limit);
+        const { data: documentChunks, error: docError } = await this.supabase
+          .rpc('match_document_chunks', {
+            query_embedding: queryEmbedding.embedding,
+            similarity_threshold: threshold,
+            match_count: limit,
+            user_id: userId
+          });
 
         if (docError) {
           console.error('Document search error:', docError);
         } else if (documentChunks) {
           documentChunks.forEach((chunk: any) => {
-            const similarity = 1 - (chunk.embedding as any);
             results.push({
               content: chunk.content,
-              similarity,
+              similarity: chunk.similarity,
               metadata: {
                 ...chunk.metadata,
-                filename: chunk.documents.filename,
-                file_type: chunk.documents.file_type,
+                filename: chunk.filename,
+                file_type: chunk.file_type,
                 chunk_index: chunk.chunk_index
               },
               source: 'document',
@@ -232,20 +246,19 @@ export class VectorService {
       // Search knowledge base
       if (includeKnowledgeBase) {
         const { data: kbItems, error: kbError } = await this.supabase
-          .from('knowledge_base')
-          .select('*')
-          .gte('1 - (embedding <=> $1)', threshold)
-          .order('embedding <=> $1')
-          .limit(limit);
+          .rpc('match_knowledge_base', {
+            query_embedding: queryEmbedding.embedding,
+            similarity_threshold: threshold,
+            match_count: limit
+          });
 
         if (kbError) {
           console.error('Knowledge base search error:', kbError);
         } else if (kbItems) {
           kbItems.forEach((item: any) => {
-            const similarity = 1 - (item.embedding as any);
             results.push({
               content: item.content,
-              similarity,
+              similarity: item.similarity,
               metadata: {
                 ...item.metadata,
                 title: item.title,
@@ -260,12 +273,20 @@ export class VectorService {
       }
 
       // Sort by similarity and return top results
-      return results
+      const sortedResults = results
         .sort((a, b) => b.similarity - a.similarity)
         .slice(0, limit);
 
+      logger.embeddingStats(`Vector search complete: ${sortedResults.length} results found (threshold: ${threshold})`);
+      if (sortedResults.length > 0) {
+        const avgSimilarity = sortedResults.reduce((sum, r) => sum + r.similarity, 0) / sortedResults.length;
+        logger.vector(`Average similarity: ${avgSimilarity.toFixed(3)}`);
+      }
+
+      return sortedResults;
+
     } catch (error) {
-      console.error('Vector search error:', error);
+      logger.error(`Vector search failed: ${error}`);
       throw error;
     }
   }

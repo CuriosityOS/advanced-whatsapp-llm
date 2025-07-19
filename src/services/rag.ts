@@ -4,6 +4,7 @@ import { PDFService, PDFProcessingResult } from './pdf';
 import { VisionService } from './vision';
 import { BotMessage, MediaAttachment } from '../types/whatsapp';
 import { LLMMessage, LLMProvider, LLMGenerationOptions } from '../types/llm';
+import { logger } from '../utils/logger';
 import crypto from 'crypto';
 
 export interface RAGContext {
@@ -57,15 +58,20 @@ export class RAGService {
     const startTime = Date.now();
 
     try {
+      logger.rag(`Processing document: ${media.filename || 'Unknown'} (${media.type})`);
+      
       let contentText = '';
       let processingResult: PDFProcessingResult | null = null;
 
       // Process based on media type
       if (media.type === 'document' && PDFService.isPDFFile(media)) {
+        logger.embeddingProgress('Extracting text from PDF...');
         processingResult = await PDFService.processPDF(media);
         if (processingResult.success) {
           contentText = processingResult.text;
+          logger.embeddingStats(`PDF processed: ${contentText.length} characters extracted`);
         } else {
+          logger.error(`PDF processing failed: ${processingResult.error}`);
           return {
             success: false,
             chunksCreated: 0,
@@ -76,7 +82,9 @@ export class RAGService {
       } else if (media.type === 'image' && VisionService.isImageSupported(media.mimetype || '')) {
         // For images, we'll store them but not create embeddings unless there's text content
         contentText = media.caption || '';
+        logger.embeddingProgress(`Image processed with caption: ${contentText.length} chars`);
       } else {
+        logger.error(`Unsupported file type: ${media.type}`);
         return {
           success: false,
           chunksCreated: 0,
@@ -86,6 +94,7 @@ export class RAGService {
       }
 
       // Store the document
+      logger.vector('Storing document metadata...');
       const document = await this.vectorService.storeDocument(
         userId,
         conversationId,
@@ -97,6 +106,7 @@ export class RAGService {
 
       // Create chunks and embeddings for text content
       if (contentText.trim().length > 0) {
+        logger.embedding('Creating embeddings for document content...');
         const chunks = await this.vectorService.storeDocumentChunks(
           document.id,
           contentText
@@ -104,15 +114,18 @@ export class RAGService {
         chunksCreated = chunks.length;
       }
 
+      const processingTime = Date.now() - startTime;
+      logger.embeddingSuccess(`Document processing complete: ${chunksCreated} chunks created in ${processingTime}ms`);
+
       return {
         success: true,
         documentId: document.id,
         chunksCreated,
-        processingTime: Date.now() - startTime
+        processingTime
       };
 
     } catch (error) {
-      console.error('Document processing error:', error);
+      logger.error(`Document processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       return {
         success: false,
         chunksCreated: 0,
@@ -144,6 +157,8 @@ export class RAGService {
     const searchStartTime = Date.now();
 
     try {
+      logger.rag(`Generating RAG response for query: "${query.substring(0, 50)}..."`);
+      
       // Search for relevant content
       const relevantContent = await this.vectorService.searchSimilarContent(
         query,
@@ -157,16 +172,20 @@ export class RAGService {
       );
 
       const searchTime = Date.now() - searchStartTime;
+      logger.embeddingStats(`Found ${relevantContent.length} relevant sources in ${searchTime}ms`);
 
       // Build context for the LLM
       const context = this.buildRAGContext(query, relevantContent, searchTime);
       
+      logger.rag('Generating contextual response with LLM...');
       // Generate response with context
       const response = await this.generateContextualResponse(
         query,
         context,
         conversationHistory
       );
+
+      logger.embeddingSuccess(`RAG response generated: ${response.usage?.totalTokens || 0} tokens used`);
 
       return {
         answer: response.content,
@@ -176,7 +195,7 @@ export class RAGService {
       };
 
     } catch (error) {
-      console.error('RAG response generation error:', error);
+      logger.error(`RAG response generation failed: ${error}`);
       throw error;
     }
   }
@@ -416,7 +435,7 @@ Guidelines:
       keysToDelete.forEach(key => this.embeddingCache.delete(key));
     }
     
-    console.log(`🧹 Cache cleaned: ${this.searchCache.size} search entries, ${this.embeddingCache.size} embedding entries`);
+    logger.embeddingStats(`Cache cleaned: ${this.searchCache.size} search entries, ${this.embeddingCache.size} embedding entries`);
   }
 
   // Batch processing for better performance
@@ -427,13 +446,17 @@ Guidelines:
       media: MediaAttachment;
     }>
   ): Promise<DocumentProcessingResult[]> {
-    console.log(`📦 Processing ${documents.length} documents in batch...`);
+    logger.rag(`Starting batch processing for ${documents.length} documents`);
+    logger.embedding('Processing documents in parallel...');
     
     const results = await Promise.allSettled(
       documents.map(doc => 
         this.processDocument(doc.userId, doc.conversationId, doc.media)
       )
     );
+
+    const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    logger.embeddingSuccess(`Batch processing complete: ${successCount}/${documents.length} documents processed successfully`);
 
     return results.map((result, index) => 
       result.status === 'fulfilled' 
